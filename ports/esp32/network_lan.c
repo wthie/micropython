@@ -51,6 +51,7 @@ typedef struct _lan_if_obj_t {
     uint8_t mdc_pin;
     uint8_t mdio_pin;
     int8_t phy_power_pin;
+    int8_t phy_reset_pin;
     uint8_t phy_addr;
     uint8_t phy_type;
     esp_eth_phy_t *phy;
@@ -90,6 +91,21 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+ void phy_device_power_enable_via_gpio(uint8_t power_pin, bool enable)
+{
+    gpio_pad_select_gpio(power_pin);
+    gpio_set_direction(power_pin, GPIO_MODE_OUTPUT);
+    if (enable == true) {
+        gpio_set_level(power_pin, 1);
+        ESP_LOGI("ethernet", "Power On Ethernet PHY");
+    } else {
+        gpio_set_level(power_pin, 0);
+        ESP_LOGI("ethernet", "Power Off Ethernet PHY");
+    }
+
+    vTaskDelay(1); // Allow the power up/down to take effect, min 300us
+}
+
 STATIC mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     lan_if_obj_t *self = &lan_obj;
 
@@ -97,12 +113,13 @@ STATIC mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
         return MP_OBJ_FROM_PTR(&lan_obj);
     }
 
-    enum { ARG_id, ARG_mdc, ARG_mdio, ARG_power, ARG_phy_addr, ARG_phy_type };
+    enum { ARG_id, ARG_mdc, ARG_mdio, ARG_power, ARG_reset, ARG_phy_addr, ARG_phy_type };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_id,           MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_mdc,          MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_mdio,         MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_power,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_reset,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_phy_addr,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_phy_type,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT },
     };
@@ -119,6 +136,7 @@ STATIC mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
     self->mdc_pin = machine_pin_get_id(args[ARG_mdc].u_obj);
     self->mdio_pin = machine_pin_get_id(args[ARG_mdio].u_obj);
     self->phy_power_pin = args[ARG_power].u_obj == mp_const_none ? -1 : machine_pin_get_id(args[ARG_power].u_obj);
+    self->phy_reset_pin = args[ARG_reset].u_obj == mp_const_none ? -1 : machine_pin_get_id(args[ARG_reset].u_obj);
 
     if (args[ARG_phy_addr].u_int < 0x00 || args[ARG_phy_addr].u_int > 0x1f) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid phy address"));
@@ -142,7 +160,7 @@ STATIC mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
 
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
     phy_config.phy_addr = self->phy_addr;
-    phy_config.reset_gpio_num = self->phy_power_pin;
+    phy_config.reset_gpio_num = self->phy_reset_pin;
     self->phy = NULL;
 
     switch (args[ARG_phy_type].u_int) {
@@ -173,6 +191,10 @@ STATIC mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
 
     esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
     self->eth_netif = esp_netif_new(&cfg);
+    
+    if (self->phy_power_pin != -1) {
+        phy_device_power_enable_via_gpio(self->phy_power_pin, true);
+    }
 
     if (esp_eth_set_default_handlers(self->eth_netif) != ESP_OK) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("esp_eth_set_default_handlers failed (invalid parameter)"));
